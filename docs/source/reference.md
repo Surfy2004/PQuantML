@@ -35,7 +35,7 @@ If you require additional parameters for the training or optimization loops, ple
 | `quantize_output`                | bool     | `true`      | Whether outputs of layers are quantized by default.                    |
 | `enable_quantization`            | bool     | `true`      | Global switch to enable or disable quantization.                       |
 | `granularity` | str | `"per_tensor"` | Whether bitwidths are shared across the whole tensor, per-channel, or per-weight. |
-| `hgq_gamma`                      | float    | `0.0`       | HGQ regularization coefficient for bitwidth stability.                 |
+| `hgq_gamma`                      | float    | `1e-8`      | L1 penalty per learned bit (HGQ). The Keras backend always uses hgq's default, 1e-8. |
 | `hgq_beta`                       | float    | `0.0`       | HGQ loss coefficient scaling EBOPs.                                    |
 | `layer_specific`                 | dict     | `{}`        | Dictionary for per-layer quantization overrides.                       |
 | `use_high_granularity_quantization`                        | bool     | `false`     | Enable or disable High Granularity Quantization (HGQ).                 |

@@ -15,7 +15,7 @@ class BaseQuantizationModel(BaseModel):
     granularity: QuantizationGranularity = Field(default=QuantizationGranularity.PER_TENSOR)
     dynamic_data_quantization: bool = Field(default=False)
     enable_quantization: bool = Field(default=True)
-    hgq_gamma: float = Field(default=0.0003)
+    hgq_gamma: float = Field(default=1e-8)  # hgq's own default; the Keras backend always uses that value
     hgq_beta: float = Field(default=1e-5)
     hgq_heterogeneous: bool = Field(default=True)
     layer_specific: dict[str, dict] = Field(default_factory=dict)

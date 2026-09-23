@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from torch.nn.common_types import _size_1_t, _size_2_t
 
 from pquant.core.torch.activations import PQActivation, PQSoftmax
-from pquant.core.torch.quantizer import Quantizer
+from pquant.core.torch.quantizer import Quantizer, _mark_final_compression_done, _register_final_compression_flag
 from pquant.core.torch.utils import get_pruning_layer
 
 if typing.TYPE_CHECKING:
@@ -88,7 +88,7 @@ class PQWeightBiasBase(nn.Module):
         self.in_quant_granularity = in_quant_granularity if in_quant_granularity is not None else self.granularity
         self.bias_quant_granularity = bias_quant_granularity if bias_quant_granularity is not None else self.granularity
         self.out_quant_granularity = out_quant_granularity if out_quant_granularity is not None else self.granularity
-        self.register_buffer("final_compression_done", torch.tensor(False))
+        _register_final_compression_flag(self)
         self.built = False
         self.parallelization_factor = -1
         self.hgq_beta = config.quantization_parameters.hgq_beta
@@ -163,6 +163,8 @@ class PQWeightBiasBase(nn.Module):
         self.parallelization_factor = self.parallelization_factor if self.parallelization_factor > 0 else self.n_parallel
         self.built = True
         self.input_shape = (1,) + input_shape[1:]
+        # The quantizers were created after any model.train()/eval() call, so hand them the layer's current mode.
+        self.train(self.training)
 
     def get_weight_quantization_bits(self):
         return self.weight_quantizer.get_quantization_bits()
@@ -248,8 +250,10 @@ class PQWeightBiasBase(nn.Module):
             return x
         if self.quantize_input:
             x = self.quantize(x, self.input_quantizer)
-        if self.pruning_method == "wanda":
-            self.pruning_layer.collect_input(x, self.weight, self.training)
+        if self.pruning_method == "wanda" and self.training and self.pruning_layer.collecting:
+            with torch.no_grad():
+                weight = self.weight
+            self.pruning_layer.collect_input(x, weight, True)
         return x
 
     def _post_forward(self, x):
@@ -258,8 +262,8 @@ class PQWeightBiasBase(nn.Module):
             return x
         if self.quantize_output:
             x = self.quantize(x, self.output_quantizer)
-        if self.pruning_method == "activation_pruning":
-            self.pruning_layer.collect_output(x, self.training)
+        if self.pruning_method == "activation_pruning" and self.training and self.pruning_layer.collecting:
+            self.pruning_layer.collect_output(x, True)
         return x
 
 
@@ -326,7 +330,7 @@ class PQDense(PQWeightBiasBase, nn.Linear):
 
     @property
     def weight(self):
-        if self.final_compression_done or self._is_fitcompress_pretraining():
+        if self._final_compression_done or self._is_fitcompress_pretraining():
             return self._weight
         if self.pruning_first:
             weight = self._prune(self._weight)
@@ -337,7 +341,7 @@ class PQDense(PQWeightBiasBase, nn.Linear):
 
     @property
     def bias(self):
-        if self.final_compression_done or self._is_fitcompress_pretraining():
+        if self._final_compression_done or self._is_fitcompress_pretraining():
             return self._bias
         bias = self.quantize(self._bias, self.bias_quantizer)
         return bias
@@ -346,7 +350,7 @@ class PQDense(PQWeightBiasBase, nn.Linear):
         self._weight.data = self.weight
         if self._bias is not None:
             self._bias.data = self.bias
-        self.final_compression_done.fill_(True)
+        _mark_final_compression_done(self)
 
     def forward(self, x):
         x = self.pre_forward(x)
@@ -394,7 +398,7 @@ class PQConvBase(PQWeightBiasBase):
 
     @property
     def weight(self):
-        if self.final_compression_done:
+        if self._final_compression_done:
             return self._weight
         if self.pruning_first:
             weight = self._prune(self._weight)
@@ -404,7 +408,7 @@ class PQConvBase(PQWeightBiasBase):
 
     @property
     def bias(self):
-        if self.final_compression_done:
+        if self._final_compression_done:
             return self._bias
         return self.quantize(self._bias, self.bias_quantizer)
 
@@ -412,7 +416,7 @@ class PQConvBase(PQWeightBiasBase):
         self._weight.data = self.weight
         if self._bias is not None:
             self._bias.data = self.bias
-        self.final_compression_done.fill_(True)
+        _mark_final_compression_done(self)
 
     def forward(self, x):
         x = self.pre_forward(x)
@@ -638,6 +642,7 @@ class PQAvgPoolBase(nn.Module):
             dynamic_data=self.config.quantization_parameters.dynamic_data_quantization,
         )
         self.input_shape = (1,) + input_shape[1:]
+        self.train(self.training)  # the new quantizers must follow the layer's current train/eval mode
 
     def get_input_quantization_bits(self):
         return self.input_quantizer.get_quantization_bits()
@@ -808,7 +813,7 @@ class PQBatchNormBase:
         else:
             self.register_parameter("_bias", None)
         self.built = False
-        self.register_buffer("final_compression_done", torch.tensor(False))
+        _register_final_compression_flag(self)
         self.is_pretraining = True
         self.post_fitcompress_calibration = False
         self.saved_inputs = []
@@ -860,11 +865,12 @@ class PQBatchNormBase:
         shape[1] = input_shape[1]
         self._shape = tuple(shape)
         self.input_shape = (1,) + input_shape[1:]
+        self.train(self.training)  # the new quantizers must follow the layer's current train/eval mode
 
     def apply_final_compression(self):
         self._weight.data = self.weight
         self._bias.data = self.bias
-        self.final_compression_done.fill_(True)
+        _mark_final_compression_done(self)
 
     def get_input_quantization_bits(self):
         return self.input_quantizer.get_quantization_bits()
@@ -880,13 +886,13 @@ class PQBatchNormBase:
 
     @property
     def weight(self):
-        if self.enable_quantization and not self.final_compression_done and not self._is_fitcompress_pretraining():
+        if self.enable_quantization and not self._final_compression_done and not self._is_fitcompress_pretraining():
             return self.weight_quantizer(self._weight)
         return self._weight
 
     @property
     def bias(self):
-        if self.enable_quantization and not self.final_compression_done and not self._is_fitcompress_pretraining():
+        if self.enable_quantization and not self._final_compression_done and not self._is_fitcompress_pretraining():
             return self.bias_quantizer(self._bias)
         return self._bias
 
@@ -1042,7 +1048,7 @@ class PQLayerNorm(nn.LayerNorm):
         else:
             self.register_parameter("_bias", None)
         self.built = False
-        self.register_buffer("final_compression_done", torch.tensor(False))
+        _register_final_compression_flag(self)
         self.is_pretraining = True
         self.post_fitcompress_calibration = False
         self.saved_inputs = []
@@ -1105,13 +1111,14 @@ class PQLayerNorm(nn.LayerNorm):
             self.input_quantizer.quantizer.build(input_shape)
             self.output_quantizer.quantizer.build(input_shape)
         self.input_shape = (1,) + tuple(input_shape[1:])
+        self.train(self.training)  # the new quantizers must follow the layer's current train/eval mode
 
     def apply_final_compression(self):
         if self._weight is not None:
             self._weight.data = self.weight
         if self._bias is not None:
             self._bias.data = self.bias
-        self.final_compression_done.fill_(True)
+        _mark_final_compression_done(self)
 
     def get_input_quantization_bits(self):
         return self.input_quantizer.get_quantization_bits()
@@ -1132,7 +1139,7 @@ class PQLayerNorm(nn.LayerNorm):
     def weight(self):
         if self._weight is None:
             return None
-        if self.enable_quantization and not self.final_compression_done and not self._is_fitcompress_pretraining():
+        if self.enable_quantization and not self._final_compression_done and not self._is_fitcompress_pretraining():
             return self.weight_quantizer(self._weight)
         return self._weight
 
@@ -1140,7 +1147,7 @@ class PQLayerNorm(nn.LayerNorm):
     def bias(self):
         if self._bias is None:
             return None
-        if self.enable_quantization and not self.final_compression_done and not self._is_fitcompress_pretraining():
+        if self.enable_quantization and not self._final_compression_done and not self._is_fitcompress_pretraining():
             return self.bias_quantizer(self._bias)
         return self._bias
 
@@ -1738,7 +1745,28 @@ def _is_training_stage(layer):
     return not (layer.pruning_layer._is_finetuning or layer.pruning_layer._is_pretraining)
 
 
+_compiled_model_losses = None
+
+
+def _is_compiled_module(model):
+    return isinstance(model, torch._dynamo.eval_frame.OptimizedModule)
+
+
 def get_model_losses(model, losses):
+    """Add the pruning and HGQ losses of every PQ layer to ``losses``.
+
+    If ``model`` is a ``torch.compile``-d module, the loss collection is compiled as well. Run eagerly, it
+    launches hundreds of tiny kernels per step, which can take longer than the training step itself.
+    """
+    if _is_compiled_module(model):
+        global _compiled_model_losses
+        if _compiled_model_losses is None:
+            _compiled_model_losses = torch.compile(_get_model_losses, dynamic=True)
+        return _compiled_model_losses(model._orig_mod, losses)
+    return _get_model_losses(model, losses)
+
+
+def _get_model_losses(model, losses):
     for layer in model.modules():
         if isinstance(layer, LAYERS_WITH_PRUNING_LAYER):
             if layer.enable_pruning and _is_training_stage(layer) and not layer.use_fitcompress:

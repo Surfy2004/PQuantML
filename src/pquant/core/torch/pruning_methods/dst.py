@@ -59,12 +59,10 @@ class DST(nn.Module):
         if self._is_pretraining or self._is_finetuning:
             return weight * self.mask.to(weight.dtype)
 
+        with torch.no_grad():
+            ratio = 1.0 - self.get_mask(weight).sum() / weight.numel()
+            self.threshold.masked_fill_(ratio >= self.config.pruning_parameters.max_pruning_pct, 0.0)
         mask = self.get_mask(weight)
-        ratio = 1.0 - mask.sum() / mask.numel()
-        if float(ratio.detach()) >= self.config.pruning_parameters.max_pruning_pct:
-            with torch.no_grad():
-                self.threshold.data.zero_()
-            mask = self.get_mask(weight)
         with torch.no_grad():
             self.mask.copy_(mask.detach())
         return weight * mask

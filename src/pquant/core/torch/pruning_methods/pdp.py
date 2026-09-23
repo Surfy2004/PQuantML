@@ -81,13 +81,18 @@ class PDP(nn.Module):
     def post_epoch_function(self, epoch, total_epochs):
         pass
 
+    def _threshold_neighbours(self, sorted_desc):
+        n = sorted_desc.numel()
+        ind = torch.floor((1.0 - self.r.double()) * self.flat_weight_size).long() - 1
+        lim = ind.clamp(0, n - 2)
+        pair = torch.gather(sorted_desc, 0, torch.stack((lim, lim + 1)))
+        return pair[0], pair[1]
+
     def _mask_unstructured(self, weight):
         weight_reshaped = weight.reshape(self.softmax_shape)
         abs_flat = weight.abs().reshape(-1)
         all_vals, _ = torch.topk(abs_flat, self._mask_numel)
-        ind = int((1 - float(self.r.item())) * self.flat_weight_size) - 1
-        lim = max(0, min(ind, int(self.flat_weight_size) - 2))
-        Wh, Wt = all_vals[lim], all_vals[lim + 1]
+        Wh, Wt = self._threshold_neighbours(all_vals)
         t = torch.ones_like(weight_reshaped) * (0.5 * (Wh + Wt))
         soft_input = torch.cat((t**2, weight_reshaped**2), dim=-1) / self.temp
         mw = torch.softmax(soft_input, dim=-1)[..., 1]
@@ -97,9 +102,7 @@ class PDP(nn.Module):
         norm = torch.norm(weight, dim=1, p=2, keepdim=True)
         norm_flat = norm.reshape(-1)
         W_all, _ = torch.topk(norm_flat, self._mask_numel)
-        ind = int((1 - float(self.r.item())) * self.flat_weight_size) - 1
-        lim = max(0, min(ind, self._mask_numel - 2))
-        Wh, Wt = W_all[lim], W_all[lim + 1]
+        Wh, Wt = self._threshold_neighbours(W_all)
         t = torch.ones_like(norm) * 0.5 * (Wh + Wt)
         soft_input = torch.cat((t**2, norm**2), dim=1) / self.temp
         mw = torch.softmax(soft_input, dim=1)[..., 1]
@@ -110,9 +113,7 @@ class PDP(nn.Module):
         norm = torch.norm(weight_reshaped, dim=1, p=2)
         norm_flat = norm.reshape(-1)
         W_all, _ = torch.topk(norm_flat, self._mask_numel)
-        ind = int((1 - float(self.r.item())) * self.flat_weight_size) - 1
-        lim = max(0, min(ind, self._mask_numel - 2))
-        Wh, Wt = W_all[lim], W_all[lim + 1]
+        Wh, Wt = self._threshold_neighbours(W_all)
         norm = norm.unsqueeze(-1)
         t = torch.ones_like(norm) * 0.5 * (Wh + Wt)
         soft_input = torch.cat((t**2, norm**2), dim=-1) / self.temp

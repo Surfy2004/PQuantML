@@ -6,7 +6,7 @@ quantization_parameters:
   default_integer_bits: 0.
   default_fractional_bits: 7.
   enable_quantization: true
-  hgq_gamma: 0.0003
+  hgq_gamma: 1e-8
   hgq_heterogeneous: true
   layer_specific:
     layer3.0.conv1:

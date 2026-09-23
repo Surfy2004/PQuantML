@@ -6,6 +6,21 @@ from pquant.core.torch.fixed_point_quantizer import get_fixed_quantizer
 from pquant.core.torch.hgq_quantizer import HGQQuantizer
 
 
+def _register_final_compression_flag(module):
+    module.register_buffer("final_compression_done", torch.tensor(False))
+    module._final_compression_done = False
+    module.register_load_state_dict_post_hook(_sync_final_compression_flag)
+
+
+def _sync_final_compression_flag(module, incompatible_keys=None):
+    module._final_compression_done = bool(module.final_compression_done)
+
+
+def _mark_final_compression_done(module):
+    module.final_compression_done.fill_(True)
+    module._final_compression_done = True
+
+
 class Quantizer(nn.Module):
     def __init__(
         self,
@@ -50,7 +65,7 @@ class Quantizer(nn.Module):
         )
         self.is_pretraining = True
         self.hgq_gamma = hgq_gamma
-        self.register_buffer("final_compression_done", torch.tensor(False))
+        _register_final_compression_flag(self)
 
     def get_quantization_bits(self):
         if self.use_hgq:
@@ -131,12 +146,17 @@ class Quantizer(nn.Module):
     def forward(self, x):
         if self.use_hgq:
             return self.quantizer(x, training=self.training)
-        elif self.final_compression_done:
+        elif self._final_compression_done:
             return self.quantizer(x, k=self.k, i=self.i, f=self.f, training=False)
         else:
             i, f = self.compute_dynamic_bits(x)
-            self.i.data = i
-            self.f.data = f
+            with torch.no_grad():
+                if self.i.shape == i.shape and self.f.shape == f.shape:
+                    self.i.copy_(i)
+                    self.f.copy_(f)
+                else:
+                    self.i.data = i
+                    self.f.data = f
         x = self.quantizer(x, k=self.k, i=i, f=f, training=self.training)
         return x
 
@@ -158,13 +178,13 @@ class Quantizer(nn.Module):
                 if self.quantizer.overflow_mode != "WRAP":
                     self.quantizer._i.data.clamp_(self.quantizer.i_min, self.quantizer.i_max)
             self._sync_hgq_mirror_bits()
-            self.final_compression_done.fill_(True)
+            _mark_final_compression_done(self)
             return
         _, i, f = self.get_quantization_bits()
         self.i.data = i
         self.f.data = f
         self.b.data = i + f
-        self.final_compression_done.fill_(True)
+        _mark_final_compression_done(self)
 
 
 def create_quantizer(
@@ -180,6 +200,8 @@ def create_quantizer(
             is_data=is_data,
             granularity=granularity,
             gamma=gamma,
+            # hgq's defaults: data lanes let their WRAP integer bits decay 0.01 per step, weights track exactly
+            i_decay_speed=0.01 if is_data else float("inf"),
         )
     else:
         return get_fixed_quantizer(round_mode=round_mode, overflow_mode=overflow)

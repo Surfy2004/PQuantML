@@ -355,3 +355,48 @@ def test_quantizer_freezes_bits_after_final_compression(shape, granularity):
     assert_close(k_layer.f, frozen_k_f, msg=f"keras f drifted after eval forward ({granularity})")
     assert_close(t_layer.i, frozen_k_i, msg=f"torch i drifted after eval forward ({granularity})")
     assert_close(t_layer.f, frozen_k_f, msg=f"torch f drifted after eval forward ({granularity})")
+
+
+def make_hgq_quantizers(shape, k=1.0, i=2.0, f=2.0, overflow="SAT", is_data=False, granularity="per_tensor"):
+    place = "datalane" if is_data else "weight"
+    kwargs = dict(k=k, i=i, f=f, overflow=overflow, round_mode="RND", is_heterogeneous=True, is_data=is_data)
+    k_layer = KQuantizer(granularity=granularity, place=place, **kwargs)
+    k_layer.build(shape)
+    t_layer = TQuantizer(granularity=granularity, place=place, **kwargs)
+    return k_layer, t_layer
+
+
+@pytest.mark.parametrize("overflow", ["SAT", "SAT_SYM", "WRAP"])
+@pytest.mark.parametrize("is_data", [False, True], ids=["weight", "data"])
+def test_get_total_bits_matches_keras_hgq_overflow_modes(overflow, is_data):
+    """hgq counts the sign bit in the ebops bit-width only in plain SAT mode; the torch mirror must agree."""
+    reset_seed()
+    shape = (8, 4)
+    x_np = (np.random.randn(*shape) * 2.0).astype(np.float32)
+    k_layer, t_layer = make_hgq_quantizers(shape, overflow=overflow, is_data=is_data)
+
+    k_layer(keras_tensor(x_np), training=True)
+    t_layer.train()
+    t_layer(torch_tensor(x_np))
+
+    assert_close(
+        k_layer.get_total_bits(shape), t_layer.get_total_bits(shape), msg=f"get_total_bits (HGQ, {overflow}, data={is_data})"
+    )
+
+
+def test_hgq_wrap_data_integer_bits_decay_like_keras():
+    """WRAP data lanes track their integer bits with hgq's datalane decay (0.01 per step), not a per-batch snap."""
+    reset_seed()
+    shape = (16, 4)
+    k_layer, t_layer = make_hgq_quantizers(
+        shape, k=0.0, i=3.0, f=3.0, overflow="WRAP", is_data=True, granularity="per_weight"
+    )
+    t_layer.train()
+    # Large first batch, then small ones: keras lets i decay slowly towards what the small batches need.
+    for scale in (6.0, 0.4, 0.4, 0.4, 0.4, 3.0):
+        x_np = (np.random.rand(*shape) * scale).astype(np.float32)
+        k_layer(keras_tensor(x_np), training=True)
+        t_layer(torch_tensor(x_np))
+        k_i = k_layer.get_quantization_bits()[1]
+        t_i = t_layer.get_quantization_bits()[1]
+        assert_close(k_i, t_i, msg=f"tracked integer bits after a batch of scale {scale}")
