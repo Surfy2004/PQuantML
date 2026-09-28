@@ -128,6 +128,7 @@ class PQActivation(nn.Module):
 
         if self.use_multiplier:
             self.multiplier = nn.Parameter(torch.tensor(-1.0), requires_grad=True)
+        self.train(self.training)  # the new quantizers must follow the layer's current train/eval mode
 
     def get_input_quantization_bits(self):
         return self.input_quantizer.get_quantization_bits()

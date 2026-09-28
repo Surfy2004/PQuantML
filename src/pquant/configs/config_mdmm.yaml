@@ -29,7 +29,7 @@ quantization_parameters:
   quantize_input: true
   quantize_output: false
   hgq_beta: 1e-5
-  hgq_gamma: 0.0003
+  hgq_gamma: 1e-8
   hgq_heterogeneous: True
   layer_specific: {}
   use_high_granularity_quantization: false

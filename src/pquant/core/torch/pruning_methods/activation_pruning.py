@@ -2,6 +2,10 @@ import torch
 import torch.nn as nn
 
 
+def _refresh_collecting_after_load(module, incompatible_keys=None):
+    module._refresh_collecting()
+
+
 class ActivationPruning(nn.Module):
     def __init__(self, config, layer_type, *args, **kwargs):
         super().__init__()
@@ -19,6 +23,7 @@ class ActivationPruning(nn.Module):
         self.threshold = float(config.pruning_parameters.threshold)
         self.t_start_collecting_batch = int(self.config.pruning_parameters.t_start_collecting_batch)
         self.built = False
+        self._collecting = False
 
     def build(self, input_shape):
         if self.built:
@@ -37,15 +42,34 @@ class ActivationPruning(nn.Module):
         self.register_buffer("activations", torch.zeros(n_channels))
         self.register_buffer("batches_collected", torch.zeros((), dtype=torch.int32))
         self.register_buffer("t", torch.zeros((), dtype=torch.int32))
+        self.register_load_state_dict_post_hook(_refresh_collecting_after_load)
         self.built = True
+        self._refresh_collecting()
 
+    @property
+    def collecting(self):
+        """True while output statistics are being gathered.
+
+        This is a plain Python bool rather than a check on the counter buffers, so the forward pass does not
+        sync with the device every step or break the torch.compile graph. It is recomputed only when the
+        pruning stage changes or ``t`` reaches the start epoch.
+        """
+        return self._collecting
+
+    def _refresh_collecting(self):
+        self._collecting = (
+            self.built
+            and not self._is_pretraining
+            and not self._is_finetuning
+            and int(self.t.item()) >= self.t_start_collecting_batch
+        )
+
+    @torch.compiler.disable
     @torch.no_grad()
     def collect_output(self, output, training):
-        if not training:
-            return
-        if self._is_pretraining or self._is_finetuning:
-            return
-        if int(self.t.item()) < self.t_start_collecting_batch:
+        # Kept out of torch.compile: the counter checks below branch on device scalars, which would break the
+        # graph. Running eagerly only costs something during the collection window, not the rest of training.
+        if not training or not self._collecting:
             return
 
         t_delta = int(self.config.pruning_parameters.t_delta)
@@ -68,6 +92,7 @@ class ActivationPruning(nn.Module):
             self.activations.zero_()
             self.batches_collected.zero_()
             self.t.zero_()
+            self._refresh_collecting()
 
     def forward(self, weight):
         if self._is_pretraining:
@@ -80,6 +105,7 @@ class ActivationPruning(nn.Module):
     def post_pre_train_function(self):
         self._is_pretraining = False
         self.is_pretraining = False
+        self._refresh_collecting()
 
     def pre_epoch_function(self, epoch, total_epochs, **kwargs):
         pass
@@ -90,6 +116,7 @@ class ActivationPruning(nn.Module):
     def pre_finetune_function(self):
         self._is_finetuning = True
         self.is_finetuning = True
+        self._refresh_collecting()
 
     def calculate_additional_loss(self):
         return 0.0
@@ -102,3 +129,4 @@ class ActivationPruning(nn.Module):
         if not self._is_pretraining:
             self.t.add_(1)
         self.mask.copy_(self.mask_placeholder)
+        self._refresh_collecting()

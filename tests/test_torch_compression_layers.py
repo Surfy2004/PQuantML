@@ -1975,3 +1975,94 @@ def test_ebops_dense_nonhgq(config_pdp, dense_input):
     model = add_compression_layers(model, config_pdp, dense_input.shape)
     post_pretrain_functions(model, config_pdp)
     model.submodule.ebops(include_mask=True)
+
+
+def test_train_model_with_compiled_model(config_pdp, dense_input, monkeypatch):
+    """train_model accepts a torch.compile-wrapped model: train/valid get the wrapper, the helpers called between
+    them (``pre_epoch_functions``, ``post_pretrain_functions`` and the rest) get the eager module underneath,
+    the forward compiles without graph breaks, and the wrapper is what gets returned."""
+    from torch._dynamo.utils import counters
+
+    import pquant.core.torch.train as train_module
+    from pquant import train_model
+
+    config_pdp.quantization_parameters.enable_quantization = True
+    config_pdp.training_parameters.pretraining_epochs = 1
+    config_pdp.training_parameters.epochs = 1
+    config_pdp.training_parameters.fine_tuning_epochs = 1
+    config_pdp.training_parameters.rounds = 1
+    model = TestModel(Linear(IN_FEATURES, OUT_FEATURES, bias=True), "relu")
+    model = add_compression_layers(model, config_pdp, dense_input.shape)
+    torch._dynamo.reset()
+    counters.clear()
+    torch._dynamo.config.cache_size_limit = max(torch._dynamo.config.cache_size_limit, 64)
+    compiled = torch.compile(model, dynamic=True)
+    optimizer = torch.optim.SGD(model.parameters(), lr=1e-3)
+    seen = []
+
+    # Record which model object each helper gets. train_model looks them up in its own module, so patch there.
+    helper_calls = {
+        name: []
+        for name in (
+            "post_pretrain_functions",
+            "pre_epoch_functions",
+            "post_epoch_functions",
+            "call_post_round_functions",
+            "pre_finetune_functions",
+        )
+    }
+    for name, calls in helper_calls.items():
+        original = getattr(train_module, name)
+
+        def spy(m, *args, _original=original, _calls=calls, **kwargs):
+            _calls.append(m)
+            return _original(m, *args, **kwargs)
+
+        monkeypatch.setattr(train_module, name, spy)
+
+    def train_func(m, epoch, **kwargs):
+        seen.append(m)
+        optimizer.zero_grad()
+        loss = get_model_losses(m, m(dense_input).sum())
+        loss.backward()
+        optimizer.step()
+
+    def valid_func(m, epoch, **kwargs):
+        with torch.no_grad():
+            m(dense_input)
+
+    returned = train_model(compiled, config_pdp, train_func, valid_func)
+
+    assert returned is compiled
+    assert all(m is compiled for m in seen) and len(seen) == 3
+    for name, calls in helper_calls.items():
+        assert calls, f"{name} was never called"
+        assert all(m is model for m in calls), f"{name} should get the eager module, not the compiled wrapper"
+    assert not counters["graph_break"], dict(counters["graph_break"])
+    pruning_layer = model.submodule.pruning_layer
+    assert not bool(pruning_layer.is_pretraining)
+    assert bool(pruning_layer.is_finetuning)
+
+
+def test_lazily_built_quantizers_follow_eval_mode(dense_input):
+    """Quantizers are created inside the first forward. If that forward runs under model.eval(), they must come up
+    in eval mode too, so a WRAP data quantizer does not start tracking integer bits from that batch."""
+    from pquant import dst_config
+
+    config = dst_config()
+    config.quantization_parameters.use_high_granularity_quantization = True
+    config.quantization_parameters.overflow_mode_data = "WRAP"
+    config.quantization_parameters.default_data_integer_bits = 3.0
+    model = TestModel(PQDense(config, IN_FEATURES, OUT_FEATURES), "relu")
+    model.eval()
+    model(dense_input)
+
+    layer = model.submodule
+    quantizers = [layer.input_quantizer, layer.weight_quantizer, layer.bias_quantizer]
+    assert all(not q.training for q in quantizers), "quantizers built under eval() must be in eval mode"
+    assert all(not m.training for m in layer.modules())
+    tracked_i = layer.input_quantizer.quantizer._i_raw
+    assert torch.all(tracked_i == 3.0), "an eval-mode forward must not re-track the WRAP integer bits"
+
+    model.train()
+    assert all(q.training for q in quantizers)

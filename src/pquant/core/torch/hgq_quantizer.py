@@ -205,9 +205,6 @@ class HGQQuantizer(nn.Module):
     # Bit-width mapping helpers
     # ------------------------------------------------------------------
 
-    def _bw_to_x(self, bw: torch.Tensor, x_shape: tuple) -> torch.Tensor:
-        return bw.expand(x_shape)
-
     def _x_to_bw_absmax(self, x: torch.Tensor) -> torch.Tensor:
         if len(self.homogeneous_axis) == 0:
             return x.abs()
@@ -223,23 +220,20 @@ class HGQQuantizer(nn.Module):
 
         if training:
             with torch.no_grad():
-                self._f.data.clamp_(self.f_min, self.f_max)
+                self._f.clamp_(self.f_min, self.f_max)
                 if self.overflow_mode != "WRAP":
-                    self._i.data.clamp_(self.i_min, self.i_max)
+                    self._i.clamp_(self.i_min, self.i_max)
 
         x_in = x  # kept for qnoise
 
         if self.scaler is not None:
             x = x / self.scaler
 
-        # Round bit-width parameters to integers with STE so gradients flow.
-        f_bw = round_conv(self._f)  # bw-shaped
+        f_bw = round_conv(self._f)
         k = self._k.float()
-        f_x = f_bw.expand(x.shape)
-        k_x = k.expand(x.shape)
 
         if self.overflow_mode == "WRAP":
-            out = self._stateless_quantizer.round(x, f_x)
+            out = self._stateless_quantizer.round(x, f_bw)
 
             if training:
                 # Track minimum integer bits needed for the current data.
@@ -253,23 +247,18 @@ class HGQQuantizer(nn.Module):
                         new_i = torch.maximum(self._i_raw - self.i_decay_speed, min_i)
                     self._i_raw.copy_(new_i.clamp(self.i_min, self.i_max))
             else:
+                i_bw = self.i
                 if self.is_data:
-                    # Data quantizer: apply wrap-modulo after rounding (inference).
-                    i_x = self.i.expand(x.shape)
-                    out = self._stateless_quantizer.saturate(out, k_x, i_x, f_x)
-                # Weight quantizer: rounded output is final, no saturation.
+                    out = self._stateless_quantizer.saturate(out, k, i_bw, f_bw)
 
-                # Zero out pruned (total bits == 0) values.
-                i_x = self.i.expand(x.shape)
-                out = torch.where(k_x + i_x + f_x > 0, out, torch.zeros_like(out))
+                out = torch.where(k + i_bw + f_bw > 0, out, torch.zeros_like(out))
 
         else:  # SAT / SAT_SYM
-            i_bw = round_conv(self._i)  # bw-shaped, STE for gradient
-            i_x = i_bw.expand(x.shape)
-            out = self._stateless_quantizer(x, k_x, i_x, f_x, training)
+            i_bw = round_conv(self._i)
+            out = self._stateless_quantizer(x, k, i_bw, f_bw, training)
 
             if not training:
-                out = torch.where(k_x + i_x + f_x > 0, out, torch.zeros_like(out))
+                out = torch.where(k + i_bw + f_bw > 0, out, torch.zeros_like(out))
 
         if self.scaler is not None:
             out = out * self.scaler
@@ -309,9 +298,9 @@ class HGQQuantizer(nn.Module):
         Call at the end of each epoch.
         """
         with torch.no_grad():
-            self._f.data.clamp_(self.f_min, self.f_max)
+            self._f.clamp_(self.f_min, self.f_max)
             if self.overflow_mode != "WRAP":
-                self._i.data.clamp_(self.i_min, self.i_max)
+                self._i.clamp_(self.i_min, self.i_max)
             # WRAP: _i_raw is already clamped inside forward().
 
     def set_bits(self, i, f) -> None:
@@ -336,10 +325,13 @@ class HGQQuantizer(nn.Module):
 
         Used by `Quantizer.get_total_bits()` for EBOPs calculations.
         """
+        # Like hgq's ``bits``: the sign bit is counted only in plain SAT mode, not in SAT_SYM or WRAP.
+        count_sign = self.overflow_mode == "SAT"
         if not self._built:
-            total = self.k0 + max(self.i0 + self.f0, 0.0)
+            total = max(self.i0 + self.f0, 0.0) + (self.k0 if count_sign else 0.0)
             return torch.full(shape, total, device=self._k.device)
-        return (self.k + self.b).expand(shape)
+        bits = self.k + self.b if count_sign else self.b
+        return bits.expand(shape)
 
 
 # ---------------------------------------------------------------------------

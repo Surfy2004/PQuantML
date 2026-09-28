@@ -158,6 +158,22 @@ trained_model = train_model(model = model,
                                 )
 
 ```
+
+#### Training with `torch.compile`
+
+`train_model` accepts a model wrapped with `torch.compile`:
+
+- Run one forward pass on real-shaped data before compiling. PQ layers build their quantizers lazily on the first call.
+- Pass `dynamic=True`, so a smaller last batch does not trigger a recompile.
+- Raise `torch._dynamo.config.cache_size_limit`. Each stage (pretrain, train, finetune) and mode (train, eval) compiles its own graph, more than the default limit of 8 allows. Past the limit, dynamo silently falls back to eager execution.
+
+```python
+model(next(iter(trainloader))[0].to(device))
+torch._dynamo.config.cache_size_limit = 64
+compiled = torch.compile(model, dynamic=True)
+compiled = train_model(model=compiled, config=config, ...)
+trained_model = compiled._orig_mod
+```
 ### Using different quantization settings per layer
 ```{note}
 If different activation layers require different quantization settings (for example when using FITCompress or HGQ), instantiate each `PQActivation` layer separately instead of reusing a single activation module.

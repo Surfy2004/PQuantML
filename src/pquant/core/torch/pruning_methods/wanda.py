@@ -2,6 +2,10 @@ import torch
 import torch.nn as nn
 
 
+def _refresh_collecting_after_load(module, incompatible_keys=None):
+    module._refresh_collecting()
+
+
 class Wanda(nn.Module):
     def __init__(self, config, layer_type, *args, **kwargs):
         super().__init__()
@@ -21,6 +25,7 @@ class Wanda(nn.Module):
         self.M = self.config.pruning_parameters.M
         self.t_start_collecting_batch = int(self.config.pruning_parameters.t_start_collecting_batch)
         self.built = False
+        self._collecting = False
 
     # Expose sparsity as a tensor so it supports torch tensor API (.cpu(), etc.)
     # while keeping the Python float for cheap internal arithmetic.
@@ -41,17 +46,35 @@ class Wanda(nn.Module):
         self.register_buffer("batches_collected", torch.zeros((), dtype=torch.int32))
         self.register_buffer("t", torch.zeros((), dtype=torch.int32))
         self.register_buffer("done", torch.zeros((), dtype=torch.bool))
+        self.register_load_state_dict_post_hook(_refresh_collecting_after_load)
         self.built = True
+        self._refresh_collecting()
 
+    @property
+    def collecting(self):
+        """True while input statistics are being gathered.
+
+        This is a plain Python bool rather than a check on the counter buffers, so the forward pass does not
+        sync with the device every step or break the torch.compile graph. It is recomputed only when the
+        pruning stage changes, ``t`` reaches the start epoch, or the mask is set.
+        """
+        return self._collecting
+
+    def _refresh_collecting(self):
+        self._collecting = (
+            self.built
+            and not self._is_pretraining
+            and not self._is_finetuning
+            and not bool(self.done.item())
+            and int(self.t.item()) >= self.t_start_collecting_batch
+        )
+
+    @torch.compiler.disable
     @torch.no_grad()
     def collect_input(self, x, weight, training):
-        if not training:
-            return
-        if self._is_pretraining or self._is_finetuning:
-            return
-        if bool(self.done.item()):
-            return
-        if int(self.t.item()) < self.t_start_collecting_batch:
+        # Kept out of torch.compile: the counter checks below branch on device scalars, which would break the
+        # graph. Running eagerly only costs something during the collection window, not the rest of training.
+        if not training or not self._collecting:
             return
 
         t_delta = int(self.config.pruning_parameters.t_delta)
@@ -72,6 +95,7 @@ class Wanda(nn.Module):
             self.done.fill_(True)
             self.inputs_sq_sum.zero_()
             self.batches_collected.zero_()
+            self._collecting = False
 
     def _compute_prune_mask(self, norm, weight):
         if self.layer_type == "linear":
@@ -137,6 +161,7 @@ class Wanda(nn.Module):
     def post_pre_train_function(self):
         self._is_pretraining = False
         self.is_pretraining = False
+        self._refresh_collecting()
 
     def pre_epoch_function(self, epoch, total_epochs, **kwargs):
         pass
@@ -147,6 +172,7 @@ class Wanda(nn.Module):
     def pre_finetune_function(self):
         self._is_finetuning = True
         self.is_finetuning = True
+        self._refresh_collecting()
 
     def calculate_additional_loss(self):
         return 0.0
@@ -158,3 +184,4 @@ class Wanda(nn.Module):
     def post_epoch_function(self, epoch, total_epochs, **kwargs):
         if not self._is_pretraining:
             self.t.add_(1)
+        self._refresh_collecting()
