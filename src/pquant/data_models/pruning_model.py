@@ -32,18 +32,18 @@ class FITCompressPruningModel(BasePruningModel):
 class PDPPruningModel(BasePruningModel):
     pruning_method: Literal["pdp"] = "pdp"
     epsilon: float = Field(default=0.015)
-    sparsity: float = Field(default=0.8)
+    sparsity: float = Field(default=0.8, ge=0.0, lt=1.0)
     temperature: float = Field(default=1.0e-05)
     structured_pruning: bool = Field(default=False)
 
 
 class WandaPruningModel(BasePruningModel):
     pruning_method: Literal["wanda"] = "wanda"
-    M: int | None = (Field(default=None),)
-    N: int | None = (Field(default=None),)
+    M: int | None = Field(default=None)
+    N: int | None = Field(default=None)
     sparsity: float = Field(default=0.9)
-    t_delta: int = Field(default=100)
-    t_start_collecting_batch: int = Field(default=100)
+    t_delta: int = Field(default=100, ge=1)
+    t_start_collecting_batch: int = Field(default=10, ge=0)
     calculate_pruning_budget: bool = Field(default=True)
 
 

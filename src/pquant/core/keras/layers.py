@@ -1952,6 +1952,7 @@ class PQMultiheadAttention(keras.layers.Layer):
                 "in_quant_granularity": self.in_quant_granularity,
                 "out_quant_granularity": self.out_quant_granularity,
                 "param_quant_granularity": self.param_quant_granularity,
+                "final_compression_done": self.q_proj.final_compression_done,
             }
         )
         return config
@@ -1964,7 +1965,11 @@ class PQMultiheadAttention(keras.layers.Layer):
         config.pop("v_proj", None)
         config.pop("out_proj", None)
         config.pop("softmax", None)
-        return cls(**config)
+        final_compression_done = config.pop("final_compression_done", False)
+        instance = cls(**config)
+        for proj in (instance.q_proj, instance.k_proj, instance.v_proj, instance.out_proj):
+            proj.final_compression_done = final_compression_done
+        return instance
 
 
 LAYERS_WITH_PRUNING_LAYER = (PQWeightBiasBase, PQSeparableConv2d, PQMultiheadAttention)

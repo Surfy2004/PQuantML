@@ -18,7 +18,6 @@ from pquant.data_models.hyperparameter_optimization_model import (
 from pquant.data_models.pruning_model import (
     ActivationPruningModel,
     AutoSparsePruningModel,
-    BasePruningModel,
     CSPruningModel,
     DSTPruningModel,
     FITCompressPruningModel,
@@ -99,8 +98,8 @@ class PQConfig(BaseModel):
     @classmethod
     def load_from_config(cls, config):
         pruning_section = config.get("pruning_parameters", {})
-        pruning_method = pruning_section.get("pruning_method", "cs")
-        pruning_model_cls = constants.PRUNING_MODEL_REGISTRY.get(pruning_method, BasePruningModel)
+        pruning_method = pruning_section.get("pruning_method")
+        pruning_model_cls = constants.PRUNING_MODEL_REGISTRY[pruning_method]
 
         return cls(
             hpo_parameters=BaseHyperparameterOptimizationModel(**config.get("hpo_parameters", {})),
