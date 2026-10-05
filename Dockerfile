@@ -7,13 +7,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-
-COPY . .
-
+COPY pyproject.toml .
+COPY src/ src/
 
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu \
        -e ".[all]" onnx onnxruntime alkaid
+
+COPY . .
 
 WORKDIR /app/tests
 CMD ["bash", "run_tests.sh"]
