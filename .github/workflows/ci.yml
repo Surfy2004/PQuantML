@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: ["main", "dev", ""add_ci_cd_pipelines""]
+    branches: ["main", "dev", "add_ci_cd_pipelines"]
   pull_request:
   workflow_dispatch:
 
