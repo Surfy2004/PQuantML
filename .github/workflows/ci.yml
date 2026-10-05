@@ -30,9 +30,7 @@ jobs:
     name: Tests (py${{ matrix.python-version }}, ${{ matrix.backend }})
     runs-on: cern-nextgen-h100
     needs: lint
-    #container:
-      #image: registry.cern.ch/ngt/lxplus-like:9
-      #options: --user root
+    container: registry.cern.ch/ngt/lxplus-like:9
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository
