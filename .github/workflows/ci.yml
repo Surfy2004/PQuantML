@@ -28,7 +28,7 @@ jobs:
 
   test:
     name: Tests (py${{ matrix.python-version }}, ${{ matrix.backend }})
-    runs-on: cern-nextgen-l40s
+    runs-on: cern-nextgen-h100
     needs: lint
     container: registry.cern.ch/ngt/lxplus-like:9
     if: >-
