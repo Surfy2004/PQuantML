@@ -11,7 +11,7 @@ from pquant.core.torch.layers import (
     PQBatchNorm2d,
     PQWeightBiasBase,
 )
-from pquant.core.torch.quantizer import Quantizer
+from pquant.core.torch.quantizer import Quantizer, quantizer_options
 
 _PQUANTML_LAYER_TYPES = (PQWeightBiasBase, PQAvgPoolBase, PQBatchNorm1d, PQBatchNorm2d, PQActivation)
 
@@ -257,6 +257,7 @@ def _insert_missing_quantizers(traced, edges_to_quantize, config):
 
     def _make_quantizer():
         return Quantizer(
+            **quantizer_options(config),
             k=qp.default_data_keep_negatives,
             i=qp.default_data_integer_bits,
             f=qp.default_data_fractional_bits,
@@ -273,6 +274,7 @@ def _insert_missing_quantizers(traced, edges_to_quantize, config):
         if isinstance(layer, PQWeightBiasBase) and getattr(layer, "built", False) and not hasattr(layer, "output_quantizer"):
             device = next(layer.parameters()).device
             layer.output_quantizer = Quantizer(
+                **quantizer_options(layer.config),
                 k=torch.tensor(layer.k_output),
                 i=torch.tensor(layer.i_output),
                 f=torch.tensor(layer.f_output),

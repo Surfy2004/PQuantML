@@ -8,7 +8,12 @@ import torch.nn.functional as F
 from torch.nn.common_types import _size_1_t, _size_2_t
 
 from pquant.core.torch.activations import PQActivation, PQSoftmax
-from pquant.core.torch.quantizer import Quantizer, _mark_final_compression_done, _register_final_compression_flag
+from pquant.core.torch.quantizer import (
+    Quantizer,
+    _mark_final_compression_done,
+    _register_final_compression_flag,
+    quantizer_options,
+)
 from pquant.core.torch.utils import get_pruning_layer
 
 if typing.TYPE_CHECKING:
@@ -106,6 +111,7 @@ class PQWeightBiasBase(nn.Module):
         # after __init__ are picked up.
         if self.quantize_input:
             self.input_quantizer = Quantizer(
+                **quantizer_options(self.config),
                 k=self.k_input,
                 i=self.i_input,
                 f=self.f_input,
@@ -119,6 +125,7 @@ class PQWeightBiasBase(nn.Module):
                 dynamic_data=self.config.quantization_parameters.dynamic_data_quantization,
             )
         self.weight_quantizer = Quantizer(
+            **quantizer_options(self.config),
             k=self.k_weight,
             i=self.i_weight,
             f=self.f_weight,
@@ -132,6 +139,7 @@ class PQWeightBiasBase(nn.Module):
             shape=self._weight.shape,
         )
         self.bias_quantizer = Quantizer(
+            **quantizer_options(self.config),
             k=self.k_bias,
             i=self.i_bias,
             f=self.f_bias,
@@ -146,6 +154,7 @@ class PQWeightBiasBase(nn.Module):
         )
         if self.quantize_output:
             self.output_quantizer = Quantizer(
+                **quantizer_options(self.config),
                 k=self.k_output,
                 i=self.i_output,
                 f=self.f_output,
@@ -213,6 +222,7 @@ class PQWeightBiasBase(nn.Module):
         """Zero the bit counts of weights that are pruned away or below the quantization step size."""
         bw_ker = bw_ker * self.pruning_layer.get_hard_mask()
         _, _, f = self.get_weight_quantization_bits()
+        f = self.weight_quantizer.expand_bits(f, self._weight.shape)
         quantization_step_size = 2 ** (-f - 1)
         step_size_mask = (torch.abs(self._weight) > quantization_step_size).float()
         return bw_ker * step_size_mask
@@ -616,6 +626,7 @@ class PQAvgPoolBase(nn.Module):
 
     def build(self, input_shape):
         self.input_quantizer = Quantizer(
+            **quantizer_options(self.config),
             k=self.k_input,
             i=self.i_input,
             f=self.f_input,
@@ -629,6 +640,7 @@ class PQAvgPoolBase(nn.Module):
             dynamic_data=self.config.quantization_parameters.dynamic_data_quantization,
         )
         self.output_quantizer = Quantizer(
+            **quantizer_options(self.config),
             k=self.k_output,
             i=self.i_output,
             f=self.f_output,
@@ -823,6 +835,7 @@ class PQBatchNormBase:
             return
         self.built = True
         self.input_quantizer = Quantizer(
+            **quantizer_options(self.config),
             k=self.k_input,
             i=self.i_input,
             f=self.f_input,
@@ -836,6 +849,7 @@ class PQBatchNormBase:
             dynamic_data=self.config.quantization_parameters.dynamic_data_quantization,
         )
         self.weight_quantizer = Quantizer(
+            **quantizer_options(self.config),
             k=self.k_weight,
             i=self.i_weight,
             f=self.f_weight,
@@ -848,6 +862,7 @@ class PQBatchNormBase:
             shape=self._weight.shape,
         )
         self.bias_quantizer = Quantizer(
+            **quantizer_options(self.config),
             k=self.k_bias,
             i=self.i_bias,
             f=self.f_bias,
@@ -1058,6 +1073,7 @@ class PQLayerNorm(nn.LayerNorm):
             return
         self.built = True
         self.input_quantizer = Quantizer(
+            **quantizer_options(self.config),
             k=self.k_input,
             i=self.i_input,
             f=self.f_input,
@@ -1071,6 +1087,7 @@ class PQLayerNorm(nn.LayerNorm):
             dynamic_data=self.config.quantization_parameters.dynamic_data_quantization,
         )
         self.output_quantizer = Quantizer(
+            **quantizer_options(self.config),
             k=self.k_output,
             i=self.i_output,
             f=self.f_output,
@@ -1084,6 +1101,7 @@ class PQLayerNorm(nn.LayerNorm):
             dynamic_data=self.config.quantization_parameters.dynamic_data_quantization,
         )
         self.weight_quantizer = Quantizer(
+            **quantizer_options(self.config),
             k=self.k_weight,
             i=self.i_weight,
             f=self.f_weight,
@@ -1096,6 +1114,7 @@ class PQLayerNorm(nn.LayerNorm):
             shape=self._weight.shape,
         )
         self.bias_quantizer = Quantizer(
+            **quantizer_options(self.config),
             k=self.k_bias,
             i=self.i_bias,
             f=self.f_bias,

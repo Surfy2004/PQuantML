@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 from torch import maximum, minimum, relu, tanh
 
-from pquant.core.torch.quantizer import Quantizer
+from pquant.core.torch.quantizer import Quantizer, quantizer_options
 
 T = TypeVar("T")
 
@@ -97,6 +97,7 @@ class PQActivation(nn.Module):
         self.built = True
         self.input_shape = (1,) + input_shape[1:]
         self.output_quantizer = Quantizer(
+            **quantizer_options(self.config),
             k=self.k_output,
             i=self.i_output,
             f=self.f_output,
@@ -110,6 +111,7 @@ class PQActivation(nn.Module):
             granularity=self.config.quantization_parameters.granularity,
         )
         self.input_quantizer = Quantizer(
+            **quantizer_options(self.config),
             k=self.k_input,
             i=self.i_input,
             f=self.f_input,
@@ -322,6 +324,7 @@ class PQSoftmax(nn.Module):
 
         def _data_quantizer(k, i, f):
             return Quantizer(
+                **quantizer_options(self.config),
                 k=torch.tensor(k),
                 i=torch.tensor(i),
                 f=torch.tensor(f),
