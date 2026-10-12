@@ -8,7 +8,12 @@ import torch.nn.functional as F
 from torch.nn.common_types import _size_1_t, _size_2_t
 
 from pquant.core.torch.activations import PQActivation, PQSoftmax
-from pquant.core.torch.quantizer import Quantizer, _mark_final_compression_done, _register_final_compression_flag
+from pquant.core.torch.quantizer import (
+    Quantizer,
+    _mark_final_compression_done,
+    _register_final_compression_flag,
+    quantizer_options,
+)
 from pquant.core.torch.utils import get_pruning_layer
 
 if typing.TYPE_CHECKING:
@@ -117,6 +122,7 @@ class PQWeightBiasBase(nn.Module):
                 hgq_gamma=self.hgq_gamma,
                 place="datalane",
                 dynamic_data=self.config.quantization_parameters.dynamic_data_quantization,
+                **quantizer_options(self.config),
             )
         self.weight_quantizer = Quantizer(
             k=self.k_weight,
@@ -130,6 +136,7 @@ class PQWeightBiasBase(nn.Module):
             hgq_gamma=self.hgq_gamma,
             place="weight",
             shape=self._weight.shape,
+            **quantizer_options(self.config),
         )
         self.bias_quantizer = Quantizer(
             k=self.k_bias,
@@ -143,6 +150,7 @@ class PQWeightBiasBase(nn.Module):
             hgq_gamma=self.hgq_gamma,
             place="bias",
             shape=None if self._bias is None else self._bias.shape,
+            **quantizer_options(self.config),
         )
         if self.quantize_output:
             self.output_quantizer = Quantizer(
@@ -157,6 +165,7 @@ class PQWeightBiasBase(nn.Module):
                 hgq_gamma=self.hgq_gamma,
                 place="datalane",
                 dynamic_data=self.config.quantization_parameters.dynamic_data_quantization,
+                **quantizer_options(self.config),
             )
 
         self.n_parallel = math.prod(tuple(input_shape)[1:-1])
@@ -213,6 +222,7 @@ class PQWeightBiasBase(nn.Module):
         """Zero the bit counts of weights that are pruned away or below the quantization step size."""
         bw_ker = bw_ker * self.pruning_layer.get_hard_mask()
         _, _, f = self.get_weight_quantization_bits()
+        f = self.weight_quantizer.expand_bits(f, self._weight.shape)
         quantization_step_size = 2 ** (-f - 1)
         step_size_mask = (torch.abs(self._weight) > quantization_step_size).float()
         return bw_ker * step_size_mask
@@ -627,6 +637,7 @@ class PQAvgPoolBase(nn.Module):
             hgq_gamma=self.hgq_gamma,
             place="datalane",
             dynamic_data=self.config.quantization_parameters.dynamic_data_quantization,
+            **quantizer_options(self.config),
         )
         self.output_quantizer = Quantizer(
             k=self.k_output,
@@ -640,6 +651,7 @@ class PQAvgPoolBase(nn.Module):
             hgq_gamma=self.hgq_gamma,
             place="datalane",
             dynamic_data=self.config.quantization_parameters.dynamic_data_quantization,
+            **quantizer_options(self.config),
         )
         self.input_shape = (1,) + input_shape[1:]
         self.train(self.training)  # the new quantizers must follow the layer's current train/eval mode
@@ -834,6 +846,7 @@ class PQBatchNormBase:
             hgq_gamma=self.hgq_gamma,
             place="datalane",
             dynamic_data=self.config.quantization_parameters.dynamic_data_quantization,
+            **quantizer_options(self.config),
         )
         self.weight_quantizer = Quantizer(
             k=self.k_weight,
@@ -846,6 +859,7 @@ class PQBatchNormBase:
             granularity=self.weight_quant_granularity,
             place="weight",
             shape=self._weight.shape,
+            **quantizer_options(self.config),
         )
         self.bias_quantizer = Quantizer(
             k=self.k_bias,
@@ -858,6 +872,7 @@ class PQBatchNormBase:
             granularity=self.bias_quant_granularity,
             place="bias",
             shape=None if self._bias is None else self._bias.shape,
+            **quantizer_options(self.config),
         )
         if self.use_hgq:
             self.input_quantizer.quantizer.build(input_shape)
@@ -1069,6 +1084,7 @@ class PQLayerNorm(nn.LayerNorm):
             hgq_gamma=self.hgq_gamma,
             place="datalane",
             dynamic_data=self.config.quantization_parameters.dynamic_data_quantization,
+            **quantizer_options(self.config),
         )
         self.output_quantizer = Quantizer(
             k=self.k_output,
@@ -1082,6 +1098,7 @@ class PQLayerNorm(nn.LayerNorm):
             hgq_gamma=self.hgq_gamma,
             place="datalane",
             dynamic_data=self.config.quantization_parameters.dynamic_data_quantization,
+            **quantizer_options(self.config),
         )
         self.weight_quantizer = Quantizer(
             k=self.k_weight,
@@ -1094,6 +1111,7 @@ class PQLayerNorm(nn.LayerNorm):
             granularity=self.weight_quant_granularity,
             place="weight",
             shape=self._weight.shape,
+            **quantizer_options(self.config),
         )
         self.bias_quantizer = Quantizer(
             k=self.k_bias,
@@ -1106,6 +1124,7 @@ class PQLayerNorm(nn.LayerNorm):
             granularity=self.bias_quant_granularity,
             place="bias",
             shape=None if self._bias is None else self._bias.shape,
+            **quantizer_options(self.config),
         )
         if self.use_hgq:
             self.input_quantizer.quantizer.build(input_shape)
