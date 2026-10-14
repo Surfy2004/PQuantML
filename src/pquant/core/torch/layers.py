@@ -200,7 +200,8 @@ class PQWeightBiasBase(nn.Module):
             self.register_parameter("_bias", self._bias)
         else:
             self.register_parameter("_bias", None)
-        self.pruning_layer.build(self._weight.shape)
+        if self.pruning_layer is not None:
+            self.pruning_layer.build(self._weight.shape)
 
     def post_pre_train_function(self):
         self.is_pretraining = False
@@ -1650,6 +1651,10 @@ def call_post_round_functions(model, rewind, rounds, r):
         post_round_functions(model)
 
 
+def _has_pruning_layer(layer):
+    return isinstance(layer, LAYERS_WITH_PRUNING_LAYER) and layer.pruning_layer is not None
+
+
 def _update_pruning_mask(layer):
     if layer.enable_pruning and hasattr(layer.pruning_layer, "update_mask"):
         layer.pruning_layer.update_mask(layer._weight)
@@ -1657,7 +1662,7 @@ def _update_pruning_mask(layer):
 
 def post_epoch_functions(model, epoch, total_epochs, **kwargs):
     for layer in model.modules():
-        if isinstance(layer, LAYERS_WITH_PRUNING_LAYER):
+        if _has_pruning_layer(layer):
             layer.pruning_layer.post_epoch_function(epoch, total_epochs, **kwargs)
             _update_pruning_mask(layer)
         elif isinstance(layer, Quantizer):
@@ -1666,13 +1671,13 @@ def post_epoch_functions(model, epoch, total_epochs, **kwargs):
 
 def pre_epoch_functions(model, epoch, total_epochs):
     for layer in model.modules():
-        if isinstance(layer, LAYERS_WITH_PRUNING_LAYER):
+        if _has_pruning_layer(layer):
             layer.pruning_layer.pre_epoch_function(epoch, total_epochs)
 
 
 def post_round_functions(model):
     for layer in model.modules():
-        if isinstance(layer, LAYERS_WITH_PRUNING_LAYER):
+        if _has_pruning_layer(layer):
             layer.pruning_layer.post_round_function()
 
 
@@ -1690,7 +1695,7 @@ def rewind_weights_functions(model):
 
 def pre_finetune_functions(model):
     for layer in model.modules():
-        if isinstance(layer, LAYERS_WITH_PRUNING_LAYER):
+        if _has_pruning_layer(layer):
             layer.pruning_layer.pre_finetune_function()
 
 

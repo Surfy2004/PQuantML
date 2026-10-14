@@ -279,4 +279,3 @@ def create_quantizer(
         )
     else:
         return get_fixed_quantizer(round_mode=round_mode, overflow_mode=overflow)
-    
