@@ -51,7 +51,7 @@ class Quantizer(nn.Module):
         is_heterogeneous,
         is_data=False,
         granularity=QuantizationGranularity.PER_TENSOR,
-        hgq_gamma=0,
+        hgq_gamma=1e-8,
         place="datalane",
         dynamic_data=True,
         shape=None,
@@ -154,7 +154,7 @@ class Quantizer(nn.Module):
         m = torch.ceil(torch.log2(abs_x + 1e-6))
         if self.unclamped_bit_split:
             return m, self.b - self.k.to(m.device) - m
-        int_bits = torch.clamp(m, min=0).clamp(max=self.b - self.k.to(m.device))
+        int_bits = torch.clamp(m, min=-8).clamp(max=self.b - self.k.to(m.device))
         frac_bits = torch.clamp(self.b - int_bits - self.k, min=0)
         return int_bits, frac_bits
 
@@ -167,9 +167,9 @@ class Quantizer(nn.Module):
             _, i, f = self.get_quantization_bits()
             return i, f
         if self.granularity in ROW_WISE_DATA:
-            abs_x = torch.amax(torch.abs(x), dim=-1, keepdim=True)
+            abs_x = torch.amax(torch.abs(x.detach()), dim=-1, keepdim=True)
         else:
-            abs_x = torch.amax(torch.abs(x))
+            abs_x = torch.amax(torch.abs(x.detach()))
         return self.calculate_bits_from_abs(abs_x)
 
     def compute_weight_param_shape(self, shape):
@@ -182,24 +182,22 @@ class Quantizer(nn.Module):
         else:
             return shape
 
+    def _reduce_absmax(self, x):
+        if self.is_data or self.granularity == QuantizationGranularity.PER_TENSOR or x.ndim == 1:
+            return torch.amax(torch.abs(x))
+        if self.blocked:
+            return torch.amax(torch.abs(x), dim=-1, keepdim=True)
+        if self.granularity in CHANNEL_WISE_WEIGHTS:
+            return torch.amax(torch.abs(x), dim=tuple(range(1, x.ndim)), keepdim=True)
+        if self.granularity == QuantizationGranularity.PER_WEIGHT:
+            return torch.abs(x)
+        raise ValueError("The selected granularity is not supported.")
+
     def compute_weight_dynamic_bits(self, x):
         if self.granularity == QuantizationGranularity.PER_TENSOR or x.ndim == 1 or not self.training:
             _, i, f = self.get_quantization_bits()
             return i, f
-        if self.blocked:
-            abs_x = torch.amax(torch.abs(x), dim=-1, keepdim=True)
-        elif self.granularity in CHANNEL_WISE_WEIGHTS:
-            if x.ndim == 2:
-                abs_x = torch.amax(torch.abs(x), dim=1, keepdim=True)
-            elif x.ndim == 3:
-                abs_x = torch.amax(torch.abs(x), dim=(1, 2), keepdim=True)
-            elif x.ndim == 4:
-                abs_x = torch.amax(torch.abs(x), dim=(1, 2, 3), keepdim=True)
-        elif self.granularity == QuantizationGranularity.PER_WEIGHT:
-            abs_x = torch.abs(x)
-        else:
-            raise ValueError("The selected granularity is not supported.")
-        return self.calculate_bits_from_abs(abs_x)
+        return self.calculate_bits_from_abs(self._reduce_absmax(x.detach()))  # see compute_data_dynamic_bits
 
     def compute_dynamic_bits(self, x):
         if self.is_data:
@@ -281,3 +279,4 @@ def create_quantizer(
         )
     else:
         return get_fixed_quantizer(round_mode=round_mode, overflow_mode=overflow)
+    
