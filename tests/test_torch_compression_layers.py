@@ -2072,18 +2072,10 @@ def test_lazily_built_quantizers_follow_eval_mode(dense_input):
 
 @pytest.mark.parametrize("granularity", [QuantizationGranularity.PER_BLOCK, QuantizationGranularity.PER_TOKEN])
 def test_row_wise_quantization_power_of_two_width(config_pdp, granularity):
-    """Train mode, 16 columns = four whole blocks of 4, block j of every row 8^-j (weights) or 16^-j (data) times
-    smaller than block 0. 4-bit weights, 8-bit data. per_block gives every block its own integer/fractional split,
-    so each block is rounded on its own grid and the tiny blocks survive; per_token shares one split per row,
-    chosen by the largest block, so the two smallest weight blocks round to zero on the step-1/8 grid."""
     per_block = granularity == QuantizationGranularity.PER_BLOCK
     q = config_pdp.quantization_parameters
-    q.enable_quantization = True
-    q.granularity = granularity
-    q.block_size = 4
-    q.dynamic_data_quantization = True
-    q.default_weight_fractional_bits = 3.0
-    q.default_data_keep_negatives = 1.0
+    q.enable_quantization, q.granularity, q.block_size, q.dynamic_data_quantization = True, granularity, 4, True
+    q.default_weight_fractional_bits, q.default_data_keep_negatives = 3.0, 1.0
     ramp = torch.linspace(-0.9, 0.9, 4)
     weights = torch.cat([ramp * s for s in (1.0, 2.0**-3, 2.0**-6, 2.0**-9)]).repeat(4, 1)
     x = torch.cat([ramp * s for s in (8.0, 1.0, 2.0**-4, 2.0**-8)]).repeat(BATCH_SIZE, 1)
@@ -2096,34 +2088,24 @@ def test_row_wise_quantization_power_of_two_width(config_pdp, granularity):
     wq = layer.weight_quantizer
     if per_block:
         assert wq.i.shape == (4, 4, 1)
-        assert torch.equal(wq.i[:, :, 0], torch.tensor([0.0, -3.0, -6.0, -8.0]).expand(4, 4))
-        assert torch.equal(wq.f[:, :, 0], torch.tensor([3.0, 6.0, 9.0, 11.0]).expand(4, 4))
-        step_w = torch.tensor([2.0**-3, 2.0**-6, 2.0**-9, 2.0**-11]).repeat_interleave(4)
+        assert torch.equal(wq.i[:, :, 0], torch.tensor([0.0, -3.0, -6.0, -9.0]).expand(4, 4))
+        assert torch.equal(wq.f[:, :, 0], torch.tensor([3.0, 6.0, 9.0, 12.0]).expand(4, 4))
+        step_w = torch.tensor([2.0**-3, 2.0**-6, 2.0**-9, 2.0**-12]).repeat_interleave(4)
         step_x = torch.tensor([2.0**-4, 2.0**-7, 2.0**-11, 2.0**-15]).repeat_interleave(4)
-        assert torch.all(layer.weight[:, 8:] != 0)
     else:
         assert wq.i.shape == (4, 1) and torch.all(wq.i == 0) and torch.all(wq.f == 3)
-        step_w = torch.full((16,), 2.0**-3)
-        step_x = torch.full((16,), 2.0**-4)
-        assert torch.all(layer.weight[:, 8:] == 0)
+        step_w, step_x = torch.full((16,), 2.0**-3), torch.full((16,), 2.0**-4)
     assert torch.all((layer.weight - weights).abs() <= step_w / 2)
     assert torch.all((layer.input_quantizer(x) - x).abs() <= step_x / 2)
+    assert torch.all((layer.weight[:, 8:] != 0) == per_block)
 
 
 @pytest.mark.parametrize("granularity", [QuantizationGranularity.PER_BLOCK, QuantizationGranularity.PER_TOKEN])
 def test_row_wise_quantization_non_power_of_two_width(config_pdp, granularity):
-    """Eval mode with dynamic data inference, 10 columns. per_block pads to three blocks inside the quantizer only:
-    the pad is zeros, unblocking restores the input, the bit tensors count three blocks, and the partial block's
-    two real columns get their own split. per_token never blocks, so nothing is padded."""
     per_block = granularity == QuantizationGranularity.PER_BLOCK
     q = config_pdp.quantization_parameters
-    q.enable_quantization = True
-    q.granularity = granularity
-    q.block_size = 4
-    q.dynamic_data_quantization = True
-    q.dynamic_data_inference = True
-    q.default_weight_fractional_bits = 3.0
-    q.default_data_keep_negatives = 1.0
+    q.enable_quantization, q.granularity, q.block_size, q.dynamic_data_quantization = True, granularity, 4, True
+    q.default_weight_fractional_bits, q.default_data_keep_negatives, q.dynamic_data_inference = 3.0, 1.0, True
     ramp = torch.linspace(-0.9, 0.9, 4)
     weights = torch.cat([ramp, ramp, ramp[:2] * 2.0**-6]).repeat(3, 1)
     x = torch.cat([ramp, ramp, ramp[:2] * 2.0**-7]).repeat(BATCH_SIZE, 1)
@@ -2131,7 +2113,7 @@ def test_row_wise_quantization_non_power_of_two_width(config_pdp, granularity):
     with torch.no_grad():
         layer._weight.copy_(weights)
     layer.train()
-    layer(x)
+    layer(x)  
     layer.eval()
 
     for quantizer, tensor in ((layer.weight_quantizer, weights), (layer.input_quantizer, x)):
@@ -2139,23 +2121,20 @@ def test_row_wise_quantization_non_power_of_two_width(config_pdp, granularity):
         if per_block:
             blocked, n = quantizer._block(tensor)
             assert n == 10 and blocked.shape == (*tensor.shape[:-1], 3, 4)
-            assert torch.equal(blocked[..., -1, :2], tensor[:, 8:]) and torch.all(blocked[..., -1, 2:] == 0)
+            assert torch.all(blocked[..., -1, 2:] == 0) and torch.equal(blocked[..., -1, :2], tensor[:, 8:])
             assert torch.equal(quantizer._unblock(blocked, n), tensor)
 
     wq = layer.weight_quantizer
     if per_block:
-        assert wq.i.shape == (3, 3, 1)
-        assert torch.equal(wq.i[:, :, 0], torch.tensor([0.0, 0.0, -6.0]).expand(3, 3))
+        assert wq.i.shape == (3, 3, 1) and torch.equal(wq.i[:, :, 0], torch.tensor([0.0, 0.0, -6.0]).expand(3, 3))
         step_w = torch.tensor([2.0**-3] * 8 + [2.0**-9] * 2)
         step_x = torch.tensor([2.0**-7] * 8 + [2.0**-14] * 2)
-        assert torch.all(layer.weight[:, 8:] != 0)
     else:
         assert wq.i.shape == (3, 1) and torch.all(wq.i == 0)
-        step_w = torch.full((10,), 2.0**-3)
-        step_x = torch.full((10,), 2.0**-7)
-        assert torch.all(layer.weight[:, 8:] == 0)
+        step_w, step_x = torch.full((10,), 2.0**-3), torch.full((10,), 2.0**-7)
     xq = layer.input_quantizer(x)
     assert layer.weight.shape == weights.shape and xq.shape == x.shape
     assert torch.all((layer.weight - weights).abs() <= step_w / 2)
     assert torch.all((xq - x).abs() <= step_x / 2)
+    assert torch.all((layer.weight[:, 8:] != 0) == per_block)
     torch.testing.assert_close(layer(x), F.linear(xq, layer.weight))
