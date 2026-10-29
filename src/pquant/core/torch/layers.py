@@ -8,12 +8,7 @@ import torch.nn.functional as F
 from torch.nn.common_types import _size_1_t, _size_2_t
 
 from pquant.core.torch.activations import PQActivation, PQSoftmax
-from pquant.core.torch.quantizer import (
-    Quantizer,
-    _mark_final_compression_done,
-    _register_final_compression_flag,
-    quantizer_options,
-)
+from pquant.core.torch.quantizer import Quantizer, _mark_final_compression_done, _register_final_compression_flag
 from pquant.core.torch.utils import get_pruning_layer
 
 if typing.TYPE_CHECKING:
@@ -86,6 +81,8 @@ class PQWeightBiasBase(nn.Module):
         self.enable_pruning = enable_pruning if enable_pruning is not None else config.pruning_parameters.enable_pruning
         self.use_fitcompress = config.fitcompress_parameters.enable_fitcompress
         self.hgq_gamma = config.quantization_parameters.hgq_gamma
+        self.block_size = config.quantization_parameters.block_size
+        self.dynamic_data_inference = config.quantization_parameters.dynamic_data_inference
         self.granularity = config.quantization_parameters.granularity
         self.weight_quant_granularity = (
             weight_quant_granularity if weight_quant_granularity is not None else self.granularity
@@ -122,7 +119,8 @@ class PQWeightBiasBase(nn.Module):
                 hgq_gamma=self.hgq_gamma,
                 place="datalane",
                 dynamic_data=self.config.quantization_parameters.dynamic_data_quantization,
-                **quantizer_options(self.config),
+                block_size=self.block_size,
+                dynamic_data_inference=self.dynamic_data_inference,
             )
         self.weight_quantizer = Quantizer(
             k=self.k_weight,
@@ -136,7 +134,8 @@ class PQWeightBiasBase(nn.Module):
             hgq_gamma=self.hgq_gamma,
             place="weight",
             shape=self._weight.shape,
-            **quantizer_options(self.config),
+            block_size=self.block_size,
+            dynamic_data_inference=self.dynamic_data_inference,
         )
         self.bias_quantizer = Quantizer(
             k=self.k_bias,
@@ -150,7 +149,8 @@ class PQWeightBiasBase(nn.Module):
             hgq_gamma=self.hgq_gamma,
             place="bias",
             shape=None if self._bias is None else self._bias.shape,
-            **quantizer_options(self.config),
+            block_size=self.block_size,
+            dynamic_data_inference=self.dynamic_data_inference,
         )
         if self.quantize_output:
             self.output_quantizer = Quantizer(
@@ -165,7 +165,8 @@ class PQWeightBiasBase(nn.Module):
                 hgq_gamma=self.hgq_gamma,
                 place="datalane",
                 dynamic_data=self.config.quantization_parameters.dynamic_data_quantization,
-                **quantizer_options(self.config),
+                block_size=self.block_size,
+                dynamic_data_inference=self.dynamic_data_inference,
             )
 
         self.n_parallel = math.prod(tuple(input_shape)[1:-1])
@@ -614,6 +615,8 @@ class PQAvgPoolBase(nn.Module):
         self.use_hgq = config.quantization_parameters.use_high_granularity_quantization
         self.enable_quantization = config.quantization_parameters.enable_quantization
         self.hgq_gamma = config.quantization_parameters.hgq_gamma
+        self.block_size = config.quantization_parameters.block_size
+        self.dynamic_data_inference = config.quantization_parameters.dynamic_data_inference
         self.hgq_beta = config.quantization_parameters.hgq_beta
         self.use_fitcompress = config.fitcompress_parameters.enable_fitcompress
         self.post_fitcompress_calibration = False
@@ -638,7 +641,8 @@ class PQAvgPoolBase(nn.Module):
             hgq_gamma=self.hgq_gamma,
             place="datalane",
             dynamic_data=self.config.quantization_parameters.dynamic_data_quantization,
-            **quantizer_options(self.config),
+            block_size=self.block_size,
+            dynamic_data_inference=self.dynamic_data_inference,
         )
         self.output_quantizer = Quantizer(
             k=self.k_output,
@@ -652,7 +656,8 @@ class PQAvgPoolBase(nn.Module):
             hgq_gamma=self.hgq_gamma,
             place="datalane",
             dynamic_data=self.config.quantization_parameters.dynamic_data_quantization,
-            **quantizer_options(self.config),
+            block_size=self.block_size,
+            dynamic_data_inference=self.dynamic_data_inference,
         )
         self.input_shape = (1,) + input_shape[1:]
         self.train(self.training)  # the new quantizers must follow the layer's current train/eval mode
@@ -809,6 +814,8 @@ class PQBatchNormBase:
         self.round_mode = config.quantization_parameters.round_mode
         self.use_hgq = config.quantization_parameters.use_high_granularity_quantization
         self.hgq_gamma = config.quantization_parameters.hgq_gamma
+        self.block_size = config.quantization_parameters.block_size
+        self.dynamic_data_inference = config.quantization_parameters.dynamic_data_inference
         self.hgq_beta = config.quantization_parameters.hgq_beta
         self.enable_quantization = config.quantization_parameters.enable_quantization
         self.use_fitcompress = config.fitcompress_parameters.enable_fitcompress
@@ -847,7 +854,8 @@ class PQBatchNormBase:
             hgq_gamma=self.hgq_gamma,
             place="datalane",
             dynamic_data=self.config.quantization_parameters.dynamic_data_quantization,
-            **quantizer_options(self.config),
+            block_size=self.block_size,
+            dynamic_data_inference=self.dynamic_data_inference,
         )
         self.weight_quantizer = Quantizer(
             k=self.k_weight,
@@ -860,7 +868,8 @@ class PQBatchNormBase:
             granularity=self.weight_quant_granularity,
             place="weight",
             shape=self._weight.shape,
-            **quantizer_options(self.config),
+            block_size=self.block_size,
+            dynamic_data_inference=self.dynamic_data_inference,
         )
         self.bias_quantizer = Quantizer(
             k=self.k_bias,
@@ -873,7 +882,8 @@ class PQBatchNormBase:
             granularity=self.bias_quant_granularity,
             place="bias",
             shape=None if self._bias is None else self._bias.shape,
-            **quantizer_options(self.config),
+            block_size=self.block_size,
+            dynamic_data_inference=self.dynamic_data_inference,
         )
         if self.use_hgq:
             self.input_quantizer.quantizer.build(input_shape)
@@ -1042,6 +1052,8 @@ class PQLayerNorm(nn.LayerNorm):
         self.round_mode = config.quantization_parameters.round_mode
         self.use_hgq = config.quantization_parameters.use_high_granularity_quantization
         self.hgq_gamma = config.quantization_parameters.hgq_gamma
+        self.block_size = config.quantization_parameters.block_size
+        self.dynamic_data_inference = config.quantization_parameters.dynamic_data_inference
         self.hgq_beta = config.quantization_parameters.hgq_beta
         self.enable_quantization = config.quantization_parameters.enable_quantization
         self.use_fitcompress = config.fitcompress_parameters.enable_fitcompress
@@ -1085,7 +1097,8 @@ class PQLayerNorm(nn.LayerNorm):
             hgq_gamma=self.hgq_gamma,
             place="datalane",
             dynamic_data=self.config.quantization_parameters.dynamic_data_quantization,
-            **quantizer_options(self.config),
+            block_size=self.block_size,
+            dynamic_data_inference=self.dynamic_data_inference,
         )
         self.output_quantizer = Quantizer(
             k=self.k_output,
@@ -1099,7 +1112,8 @@ class PQLayerNorm(nn.LayerNorm):
             hgq_gamma=self.hgq_gamma,
             place="datalane",
             dynamic_data=self.config.quantization_parameters.dynamic_data_quantization,
-            **quantizer_options(self.config),
+            block_size=self.block_size,
+            dynamic_data_inference=self.dynamic_data_inference,
         )
         self.weight_quantizer = Quantizer(
             k=self.k_weight,
@@ -1112,7 +1126,8 @@ class PQLayerNorm(nn.LayerNorm):
             granularity=self.weight_quant_granularity,
             place="weight",
             shape=self._weight.shape,
-            **quantizer_options(self.config),
+            block_size=self.block_size,
+            dynamic_data_inference=self.dynamic_data_inference,
         )
         self.bias_quantizer = Quantizer(
             k=self.k_bias,
@@ -1125,7 +1140,8 @@ class PQLayerNorm(nn.LayerNorm):
             granularity=self.bias_quant_granularity,
             place="bias",
             shape=None if self._bias is None else self._bias.shape,
-            **quantizer_options(self.config),
+            block_size=self.block_size,
+            dynamic_data_inference=self.dynamic_data_inference,
         )
         if self.use_hgq:
             self.input_quantizer.quantizer.build(input_shape)

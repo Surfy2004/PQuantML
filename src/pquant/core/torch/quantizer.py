@@ -31,15 +31,6 @@ def _mark_final_compression_done(module):
     module._final_compression_done = True
 
 
-def quantizer_options(config):
-    q = config.quantization_parameters
-    return {
-        "block_size": q.block_size,
-        "dynamic_inference": q.dynamic_data_inference,
-        "unclamped_bit_split": q.unclamped_bit_split,
-    }
-
-
 class Quantizer(nn.Module):
     def __init__(
         self,
@@ -56,8 +47,7 @@ class Quantizer(nn.Module):
         dynamic_data=True,
         shape=None,
         block_size=128,
-        dynamic_inference=False,
-        unclamped_bit_split=False,
+        dynamic_data_inference=False,
     ):
         super().__init__()
 
@@ -66,8 +56,7 @@ class Quantizer(nn.Module):
         self.use_hgq = is_heterogeneous
         self.is_data = is_data
         self.dynamic_data = dynamic_data
-        self.dynamic_inference = dynamic_inference
-        self.unclamped_bit_split = unclamped_bit_split
+        self.dynamic_data_inference = dynamic_data_inference
         self.block_size = block_size
         self.granularity = QuantizationGranularity(granularity).value
         self.shape = shape
@@ -108,8 +97,7 @@ class Quantizer(nn.Module):
 
     @staticmethod
     def _unblock(xb, n):
-        x = xb.reshape(*xb.shape[:-2], -1)
-        return x if x.shape[-1] == n else x[..., :n]
+        return xb.reshape(*xb.shape[:-2], -1)[..., :n]
 
     def expand_bits(self, bits, shape):
         if self.blocked and bits.ndim == 3 and len(shape) == 2:
@@ -128,7 +116,7 @@ class Quantizer(nn.Module):
             return self.quantizer.bits_(shape)
         else:
             b = self.expand_bits(self.i + self.f + self.k, shape)
-            return torch.ones(shape).to(b.device) * b
+            return torch.ones(shape, device=b.device) * b
 
     def _sync_hgq_mirror_bits(self):
         if not self.quantizer.built:
@@ -146,21 +134,20 @@ class Quantizer(nn.Module):
         else:
             self.i.data = torch.as_tensor(i, dtype=self.i.dtype, device=self.i.device).broadcast_to(self.i.shape).clone()
             self.f.data = torch.as_tensor(f, dtype=self.f.dtype, device=self.f.device).broadcast_to(self.f.shape).clone()
+            self.b.data = self.k + self.i + self.f
 
     def post_pre_train_function(self):
         self.is_pretraining = False
 
     def calculate_bits_from_abs(self, abs_x):
         m = torch.ceil(torch.log2(abs_x + 1e-6))
-        if self.unclamped_bit_split:
-            return m, self.b - self.k.to(m.device) - m
-        int_bits = torch.clamp(m, min=-8).clamp(max=self.b - self.k.to(m.device))
+        int_bits = torch.clamp(m, min=-8).clamp(max=self.b - self.k)
         frac_bits = torch.clamp(self.b - int_bits - self.k, min=0)
         return int_bits, frac_bits
 
     @property
     def data_range_is_dynamic(self):
-        return self.is_data and self.dynamic_data and (self.training or self.dynamic_inference)
+        return self.is_data and self.dynamic_data and (self.training or self.dynamic_data_inference)
 
     def compute_data_dynamic_bits(self, x):
         if not self.data_range_is_dynamic:
@@ -175,7 +162,7 @@ class Quantizer(nn.Module):
     def compute_weight_param_shape(self, shape):
         if shape is None or self.granularity == QuantizationGranularity.PER_TENSOR or len(shape) == 1:
             return ()
-        elif self.granularity == QuantizationGranularity.PER_BLOCK and len(shape) == 2:
+        elif self.blocked:
             return (shape[0], math.ceil(shape[1] / self.block_size), 1)
         elif self.granularity in CHANNEL_WISE_WEIGHTS:
             return (shape[0],) + (1,) * (len(shape) - 1)  # Channels first
@@ -183,7 +170,7 @@ class Quantizer(nn.Module):
             return shape
 
     def _reduce_absmax(self, x):
-        if self.is_data or self.granularity == QuantizationGranularity.PER_TENSOR or x.ndim == 1:
+        if self.granularity == QuantizationGranularity.PER_TENSOR or x.ndim == 1:
             return torch.amax(torch.abs(x))
         if self.blocked:
             return torch.amax(torch.abs(x), dim=-1, keepdim=True)
@@ -223,13 +210,14 @@ class Quantizer(nn.Module):
         blocked = self.blocked and x.ndim > 1
         if blocked:
             x, n = self._block(x)
-        if self._final_compression_done and not (self.data_range_is_dynamic and self.dynamic_inference):
+        if self._final_compression_done and not self.data_range_is_dynamic:
             x = self.quantizer(x, k=self.k, i=self.i, f=self.f, training=False)
         else:
             i, f = self.compute_dynamic_bits(x)
-            if self.training and not self._final_compression_done:
+            training = self.training and not self._final_compression_done
+            if training:
                 self._remember_bits(i, f)
-            x = self.quantizer(x, k=self.k, i=i, f=f, training=self.training and not self._final_compression_done)
+            x = self.quantizer(x, k=self.k, i=i, f=f, training=training)
         if blocked:
             x = self._unblock(x, n)
         return x
@@ -254,10 +242,7 @@ class Quantizer(nn.Module):
             self._sync_hgq_mirror_bits()
             _mark_final_compression_done(self)
             return
-        _, i, f = self.get_quantization_bits()
-        self.i.data = i
-        self.f.data = f
-        self.b.data = i + f
+        self.b.data = self.k + self.i + self.f
         _mark_final_compression_done(self)
 
 

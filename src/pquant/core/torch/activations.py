@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 from torch import maximum, minimum, relu, tanh
 
-from pquant.core.torch.quantizer import Quantizer, quantizer_options
+from pquant.core.torch.quantizer import Quantizer
 
 T = TypeVar("T")
 
@@ -80,6 +80,8 @@ class PQActivation(nn.Module):
         self.use_multiplier = config.quantization_parameters.use_relu_multiplier
         self.hgq_beta = config.quantization_parameters.hgq_beta
         self.hgq_gamma = config.quantization_parameters.hgq_gamma
+        self.block_size = config.quantization_parameters.block_size
+        self.dynamic_data_inference = config.quantization_parameters.dynamic_data_inference
         self.hgq_heterogeneous = config.quantization_parameters.hgq_heterogeneous
         self.use_fitcompress = config.fitcompress_parameters.enable_fitcompress
         self.dynamic_data = config.quantization_parameters.dynamic_data_quantization
@@ -108,7 +110,8 @@ class PQActivation(nn.Module):
             place="datalane",
             dynamic_data=self.dynamic_data,
             granularity=self.config.quantization_parameters.granularity,
-            **quantizer_options(self.config),
+            block_size=self.block_size,
+            dynamic_data_inference=self.dynamic_data_inference,
         )
         self.input_quantizer = Quantizer(
             k=self.k_input,
@@ -122,7 +125,8 @@ class PQActivation(nn.Module):
             place="datalane",
             dynamic_data=self.dynamic_data,
             granularity=self.config.quantization_parameters.granularity,
-            **quantizer_options(self.config),
+            block_size=self.block_size,
+            dynamic_data_inference=self.dynamic_data_inference,
         )
         if self.use_hgq:
             self.input_quantizer.quantizer.build(input_shape)
@@ -275,6 +279,8 @@ class PQSoftmax(nn.Module):
         self.round_mode = config.quantization_parameters.round_mode
         self.use_hgq = config.quantization_parameters.use_high_granularity_quantization
         self.hgq_gamma = config.quantization_parameters.hgq_gamma
+        self.block_size = config.quantization_parameters.block_size
+        self.dynamic_data_inference = config.quantization_parameters.dynamic_data_inference
         self.hgq_beta = config.quantization_parameters.hgq_beta
         self.enable_quantization = config.quantization_parameters.enable_quantization
         self.is_pretraining = True
@@ -334,7 +340,8 @@ class PQSoftmax(nn.Module):
                 hgq_gamma=self.hgq_gamma,
                 place="datalane",
                 dynamic_data=self.config.quantization_parameters.dynamic_data_quantization,
-                **quantizer_options(self.config),
+                block_size=self.block_size,
+                dynamic_data_inference=self.dynamic_data_inference,
             )
 
         self.input_quantizer = _data_quantizer(self.k_input, self.i_input, self.f_input)

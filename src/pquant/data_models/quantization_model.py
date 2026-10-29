@@ -16,7 +16,6 @@ class BaseQuantizationModel(BaseModel):
     dynamic_data_quantization: bool = Field(default=False)
     block_size: int = Field(default=128, gt=0)
     dynamic_data_inference: bool = Field(default=False)
-    unclamped_bit_split: bool = Field(default=False)
     enable_quantization: bool = Field(default=True)
     hgq_gamma: float = Field(default=1e-8, ge=0.0)
     hgq_beta: float = Field(default=1e-5)
