@@ -8,13 +8,6 @@ from pquant.core.constants import QuantizationGranularity
 from pquant.core.torch.fixed_point_quantizer import get_fixed_quantizer
 from pquant.core.torch.hgq_quantizer import HGQQuantizer
 
-ROW_WISE_DATA = (QuantizationGranularity.PER_TOKEN, QuantizationGranularity.PER_BLOCK)
-CHANNEL_WISE_WEIGHTS = (
-    QuantizationGranularity.PER_CHANNEL,
-    QuantizationGranularity.PER_BLOCK,
-    QuantizationGranularity.PER_TOKEN,
-)
-
 
 def _register_final_compression_flag(module):
     module.register_buffer("final_compression_done", torch.tensor(False))
@@ -81,6 +74,18 @@ class Quantizer(nn.Module):
         self.is_pretraining = True
         self.hgq_gamma = hgq_gamma
         _register_final_compression_flag(self)
+
+    @property
+    def row_wise(self):
+        return self.granularity in (QuantizationGranularity.PER_TOKEN, QuantizationGranularity.PER_BLOCK)
+
+    @property
+    def channel_wise(self):
+        return self.granularity in (
+            QuantizationGranularity.PER_CHANNEL,
+            QuantizationGranularity.PER_BLOCK,
+            QuantizationGranularity.PER_TOKEN,
+        )
 
     @property
     def blocked(self):
@@ -153,7 +158,7 @@ class Quantizer(nn.Module):
         if not self.data_range_is_dynamic:
             _, i, f = self.get_quantization_bits()
             return i, f
-        if self.granularity in ROW_WISE_DATA:
+        if self.row_wise:
             abs_x = torch.amax(torch.abs(x.detach()), dim=-1, keepdim=True)
         else:
             abs_x = torch.amax(torch.abs(x.detach()))
@@ -164,7 +169,7 @@ class Quantizer(nn.Module):
             return ()
         elif self.blocked:
             return (shape[0], math.ceil(shape[1] / self.block_size), 1)
-        elif self.granularity in CHANNEL_WISE_WEIGHTS:
+        elif self.channel_wise:
             return (shape[0],) + (1,) * (len(shape) - 1)  # Channels first
         else:
             return shape
@@ -174,7 +179,7 @@ class Quantizer(nn.Module):
             return torch.amax(torch.abs(x))
         if self.blocked:
             return torch.amax(torch.abs(x), dim=-1, keepdim=True)
-        if self.granularity in CHANNEL_WISE_WEIGHTS:
+        if self.channel_wise:
             return torch.amax(torch.abs(x), dim=tuple(range(1, x.ndim)), keepdim=True)
         if self.granularity == QuantizationGranularity.PER_WEIGHT:
             return torch.abs(x)
@@ -193,7 +198,7 @@ class Quantizer(nn.Module):
 
     def _remember_bits(self, i, f):
         with torch.no_grad():
-            if self.is_data and self.granularity in ROW_WISE_DATA and i.shape != self.i.shape:
+            if self.is_data and self.row_wise and i.shape != self.i.shape:
                 i_max = i.detach().amax()
                 self.i.copy_(i_max)
                 self.f.copy_(self.b - self.k - i_max)
